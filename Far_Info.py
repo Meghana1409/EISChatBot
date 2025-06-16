@@ -16,6 +16,206 @@ headers = {
 }
 payload = {
     "user": "eisadmin",
+    "pass": "Password1@4"
+}
+
+session=requests.Session()
+session.headers.update(headers)
+
+def get_far_db(request,user_dict):
+    filters={}
+    filtercreate=""
+    filterexpire=""
+    key_ip=''
+    target_ip=''
+    for key,val in user_dict.items():
+        if val :
+            if key == "filterexpired" :
+                filterexpire=val
+            elif key == "filtercreated":
+                filtercreate=val
+            elif key == "Created":
+                if filtercreate == "Before":
+                    filters[f"{key}__lte"]=val
+                else:
+                    filters[f"{key}__gte"]=val
+            elif key == "Expires":
+                if filterexpire == "Before":
+                    filters[f"{key}__lte"]=val
+                else:
+                    filters[f"{key}__gte"]=val
+            elif key == "Requested_Source" or key == "Requested_Destination":
+                key_ip,target_ip = key,ip_address(val)
+                #filters[f"{key}__icontains"]=val
+            else:
+                filters[f"{key}__icontains"]=val
+
+
+    Fardata = FarDetailsAll.objects.filter(**filters).values()
+    if key_ip:
+        for obj in Fardata:
+            ipaddr= obj["Requested_Source"].strip().split(',')
+            for i in ipaddr:
+                ips = i.split('-')
+                start=ips[0].strip().split('/')[0]
+                if len(ips) > 1:
+                    end=ips[1].strip()
+                    if ip_address(start) <= target_ip <= ip_address(end):
+                        Fardata=[obj]
+                        break
+                else:
+                    if ip_address(start) <= target_ip:
+                        Fardata=[obj]
+                        break
+    if(len(Fardata) > 0):
+        if(len(Fardata) == 1):
+            far=Fardata[0]
+            request.session["details"]=far
+            request.session["conversation_state"] = "awaiting_details"
+            return (f"FAR ID {far['Far_Id']} is raised for <b>{far['Subject']} </b> which is now at <b>{far['Status']}</b> ","do you want more details?:\n1.YES\n2.No\ny.Back\nz.Main Menu")
+        else:
+            FAR_list='\n'.join([f"{chr(i)}. {far['Far_Id']} : {far['Subject']}" for i, far in enumerate(Fardata,97)])
+            request.session["conversation_state"] = "awaiting_user_choice"
+            return ("Multiple matches found",f"\nPlease select one by name.:\n{FAR_list}\ny.back\nz.main menu")
+            #return ("Multiple matches found",f"\nPlease select one by name.:\n\ny.back\nz.main menu")
+    else:
+        request.session["details"]=user_dict
+        request.session["conversation_state"] = "awaiting_id"
+        return ("My Database don't have data related to this Far.""Do you want me to search data in portal and give data to you?","\n1.YES\n2.NO\ny.back\nz.Main Menu")
+
+def get_far_info(request,user_dict):
+    if 'Far_Id' in user_dict:
+        id=str(user_dict['Far_Id'])
+        url = "https://nspm.sbi/FireFlow/Ticket/Display.html?id="+id
+    #response = requests.post(url, data=payload, headers=headers, verify=False)
+        response=session.post(url,data=payload,headers=headers,verify=False)
+        decoded=urllib.parse.unquote(response.text)
+        soup = BeautifulSoup(decoded, 'html.parser')
+        try:
+            titles=soup.find_all('table', {'class': 'ticket-summary'})
+            summary=[tag for tag in titles[0].find_all(class_="titlebox-content") if tag.name != "script"]
+            basic_dict={}
+            basic_title=summary[0].find_all(class_="labeltop")
+            basic_values=summary[0].find_all(class_="value")
+            for i in range(len(basic_title)):
+                basic_dict[basic_title[i].get_text()]=basic_values[i].get_text()
+
+            general_title=summary[2].find_all(class_="labeltop")
+            general_values=summary[2].find_all(class_="value")
+            for i in range(len(general_title)):
+                basic_dict[general_title[i].get_text()]=general_values[i].get_text()
+
+            add_info=summary[3].find_all(class_="labeltop")
+            add_info_values=summary[3].find_all(class_="value")
+            for i in range(len(add_info)):
+                basic_dict[add_info[i].get_text()]=add_info_values[i].get_text()
+
+            original_req=summary[4].find_all(class_="label")
+            original_value=summary[4].find_all(class_="value")
+            for i in range(len(original_req)):
+                basic_dict[original_req[i].get_text()]=[original_value[i].get_text(),original_value[i+len(original_req)+2].get_text()]
+            request.session["details"]=basic_dict
+            return (f"FAR ID {user_dict['Far_Id']} is raised for <b>{basic_dict['Subject']} </b> which is now at <b>{basic_dict['Status']}</b> ","do you want more details?:\n1.YES\n2.No")
+        except:
+            basic_dict="Far Not Found"
+            #request.session["conversation_state"] = "awaiting_selection"
+        return basic_dict
+    else:
+        return get_advanced_far_search(request,user_dict)
+
+
+#def get_advanced_far_search(farid="",subject="",department="",source="",destination="",port=""):
+def get_advanced_far_search(request,user_dict):
+    url = "https://nspm.sbi/FireFlow/Search/Build.html"
+    header_adv=headers
+
+    payload = {
+    "user": "eisadmin",
+    "pass": "Password1@4"
+    }
+
+    header_adv["Referer"]="https://nspm.sbi/FireFlow/Search/Build.html"
+    header_adv["Origin"]="https://nspm.sbi/"
+    session.headers.update(header_adv)
+    resp=session.post(url,data=payload,verify=False)
+    fin_resp=session.get(url,verify=False)
+    soup=BeautifulSoup(fin_resp.text, 'html.parser')
+    form = soup.find_all('form')[1]
+    post_url=form.get('action')
+    if not post_url.startswith("http"):
+        post_url=requests.compat.urljoin(url,post_url)
+
+    payloads={}
+    for input_tag in form.find_all('input'):
+        name=input_tag.get('name')
+        value=input_tag.get('value','')
+        if name:
+            payloads[name]= value
+    if "Subject"  in user_dict:
+        payloads["AttachmentField"]= "Subject"
+        payloads["AttachmentOp"]= "LIKE"
+        payloads["ValueOfAttachment"]=user_dict["Subject"]
+    if "Requested_Source"  in user_dict:
+        payloads["'CF.{Requested Source}'Op"]= "LIKE"
+        payloads["ValueOf'CF.{Requested Source}'"] = user_dict["Requested_Source"]
+    if "Requested_Destination"  in user_dict:
+        payloads["'CF.{Requested Destination}'Op"]= "LIKE"
+        payloads["ValueOf'CF.{Requested Destination}'"]=user_dict["Requested_Destination"]
+    if "Requested_Service" in user_dict:
+        payloads["'CF.{Requested Service}'Op"]= "LIKE"
+        payloads["ValueOf'CF.{Requested Service}'"]= 'tcp/'+user_dict["Requested_Service"]
+    if "ZONE" in user_dict:
+        payloads["'CF.{ZONE}'Op"]= "LIKE"
+        payloads["ValueOf'CF.{ZONE}'"]=user_dict["ZONE"]
+    payloads["AndOr"]= "AND"
+    payloads["OrderBy"]="id"
+    payloads["Order"]="ASC"
+
+    final_resp=session.post(url,data=payloads,verify=False)
+    final_soup=BeautifulSoup(final_resp.text, 'html.parser')
+    try:
+        ticket_list={}
+        tickets=final_soup.find('table',{'class':'ticket-list'}).find_all('tr')
+        for i in tickets:
+            tds=i.find_all('td')
+            if(len(tds)>1):
+                ticket_id=tds[0].text
+                ticket_subject=tds[1].text
+                if ticket_subject not in ticket_list:
+                    ticket_list[ticket_subject]=ticket_id
+    except:
+        ticket_list="Portal don't have data related to this Far."
+        request.session["conversation_state"] = "awaiting_selection"
+
+
+    return ticket_list
+
+
+def getfarmonthlyexpiry(request):
+    pass
+
+
+
+###############################################################################################################################
+
+import requests
+import urllib.parse
+from bs4 import BeautifulSoup
+import re
+import datetime
+from .models import FarDetailsAll
+from ipaddress import ip_address
+
+x = datetime.datetime.now()
+
+todat_date=x.strftime("%Y-%m-%d")
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+payload = {
+    "user": "eisadmin",
     "pass": "Password1@5"
 }
 
